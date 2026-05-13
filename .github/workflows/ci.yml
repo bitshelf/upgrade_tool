@@ -70,18 +70,13 @@ jobs:
             dist/*.deb
             dist/upgrade_tool-*
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Create Release via API
+      - name: Create Draft Release (amd64 only)
+        if: startsWith(github.ref, 'refs/tags/') && matrix.arch == 'amd64'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/${{ github.repository }}/releases" \
-            -f tag_name="${{ github.ref_name }}" \
-            -f name="upgrade_tool ${{ github.ref_name }}" \
-            -f body="Pre-built statically-linked binaries."
+          gh release create "${{ github.ref_name }}" \
+            --title "upgrade_tool ${{ github.ref_name }}" \
+            --notes "Pre-built statically-linked binaries." \
+            --draft \
+            dist/*.deb dist/upgrade_tool-*
