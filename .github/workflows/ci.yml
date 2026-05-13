@@ -27,18 +27,22 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo dpkg --add-architecture arm64
-          # security.ubuntu.com doesn't serve arm64 — pin those repos to amd64 only
-          for f in /etc/apt/sources.list.d/*.sources; do
-            grep -q 'security.ubuntu.com' "$f" 2>/dev/null \
-              && sudo sed -i '/^URIs:.*security\.ubuntu\.com/i\Architectures: amd64' "$f"
-          done
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            build-essential cmake \
-            libusb-1.0-0-dev \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            libusb-1.0-0-dev:arm64
+            build-essential cmake libusb-1.0-0-dev \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Fetch arm64 libusb static library
+        run: |
+          set -euo pipefail
+          # Get the amd64 libusb version (same version exists for arm64)
+          PKG_VER=$(apt-cache show libusb-1.0-0-dev | awk '/^Version:/ {print $2; exit}')
+          echo "libusb version: ${PKG_VER}"
+          mkdir -p /tmp/arm64-root
+          curl -sL "http://archive.ubuntu.com/ubuntu/pool/main/libu/libusb-1.0/libusb-1.0-0-dev_${PKG_VER}_arm64.deb" \
+            -o /tmp/libusb-arm64.deb
+          dpkg-deb -x /tmp/libusb-arm64.deb /tmp/arm64-root
+          find /tmp/arm64-root -name '*.a' -exec ls -lh {} \;
 
       - name: Build amd64 static
         run: |
@@ -52,7 +56,8 @@ jobs:
         run: |
           cmake -B build/arm64 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/cmake/toolchain-aarch64.cmake"
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/cmake/toolchain-aarch64.cmake" \
+            -DCMAKE_LIBRARY_PATH=/tmp/arm64-root/usr/lib/aarch64-linux-gnu
           cmake --build build/arm64
 
       - name: Package
