@@ -77,26 +77,42 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Download amd64
+      - name: Download amd64 artifacts
         uses: actions/download-artifact@v4
         with:
           name: upgrade_tool-amd64
+          path: out/amd64
 
-      - name: Download arm64
+      - name: Download arm64 artifacts
         uses: actions/download-artifact@v4
         with:
           name: upgrade_tool-arm64
+          path: out/arm64
 
-      - name: Show files
-        run: find . -type f -not -path './.git/*' | sort
+      - name: Verify assets
+        run: |
+          echo "=== amd64 assets ==="
+          find out/amd64 -type f | sort
+          echo ""
+          echo "=== arm64 assets ==="
+          find out/arm64 -type f | sort
+          echo ""
+          COUNT=$(find out -type f | wc -l)
+          echo "Total files: $COUNT"
+          if [ "$COUNT" -lt 4 ]; then
+            echo "ERROR: Expected at least 4 assets, got $COUNT" >&2
+            exit 1
+          fi
 
       - name: Create Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ASSETS=$(find . -path './dist/*.deb' -o -path './dist/upgrade_tool-*' | sort)
+          ASSETS=$(find out -type f \( -name '*.deb' -o -name 'upgrade_tool-*' \) | sort)
           echo "Assets to upload:"
           echo "$ASSETS"
+          echo ""
+          echo "Asset count: $(echo "$ASSETS" | wc -l)"
 
           gh release create "${{ github.ref_name }}" \
             --title "upgrade_tool ${{ github.ref_name }}" \
