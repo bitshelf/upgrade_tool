@@ -1,11 +1,6 @@
 # GitHub Actions — upgrade_tool
-# Build Debian-compatible static binaries on push.
-# On tag push: create a GitHub Release with binaries + .deb packages.
-#
-# Strategy:
-#   - Static linking (libusb-1.0 + libudev-zero built from source)
-#   - amd64 native build + arm64 cross-compile via aarch64-linux-gnu
-#   - .deb packaging via scripts/package-deb.sh (ar + tar, no dpkg-deb needed)
+# Build statically-linked binaries on native amd64 and arm64 runners.
+# On tag push: create a GitHub Release with .deb packages + raw binaries.
 
 name: build-and-release
 
@@ -21,101 +16,77 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            build-essential cmake libusb-1.0-0-dev \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y -qq build-essential cmake libusb-1.0-0-dev
 
-      - name: Prepare libudev-zero (clone to skip FetchContent download)
+      - name: Build
         run: |
-          git clone --depth 1 --branch 1.0.3 \
-            https://github.com/illiliti/libudev-zero.git /tmp/libudev-zero
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -- -j$(nproc)
 
-      - name: Fetch arm64 libusb static library
+      - name: Set version
+        id: ver
         run: |
-          set -euo pipefail
-          PKG_VER=$(apt-cache show libusb-1.0-0-dev | awk '/^Version:/ {print $2; exit}')
-          echo "libusb version: ${PKG_VER}"
-          mkdir -p /tmp/arm64-root
-          curl -sL --retry 3 --max-time 60 \
-            "http://archive.ubuntu.com/ubuntu/pool/main/libu/libusb-1.0/libusb-1.0-0-dev_${PKG_VER}_arm64.deb" \
-            -o /tmp/libusb-arm64.deb
-          dpkg-deb -x /tmp/libusb-arm64.deb /tmp/arm64-root
-          find /tmp/arm64-root -name '*.a' -exec ls -lh {} \;
-
-      - name: Build amd64 static
-        run: |
-          cmake -B build/amd64 -DCMAKE_BUILD_TYPE=Release \
-            -DFETCHCONTENT_SOURCE_DIR_LIBUDEV_ZERO_SOURCE=/tmp/libudev-zero
-          cmake --build build/amd64 -- -j$(nproc)
-
-      - name: Build arm64 static (cross-compile)
-        env:
-          CC: aarch64-linux-gnu-gcc
-          CXX: aarch64-linux-gnu-g++
-        run: |
-          cmake -B build/arm64 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/cmake/toolchain-aarch64.cmake" \
-            -DCMAKE_LIBRARY_PATH=/tmp/arm64-root/usr/lib/aarch64-linux-gnu \
-            -DFETCHCONTENT_SOURCE_DIR_LIBUDEV_ZERO_SOURCE=/tmp/libudev-zero
-          cmake --build build/arm64 -- -j$(nproc)
-
-      - name: Package
-        run: |
-          set -euo pipefail
-          # Derive version: tag name without 'v' prefix, or 0.0.0+<short-sha>
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            VER="${{ github.ref_name }}"
-            VER="${VER#v}"
+            V="${{ github.ref_name }}"
+            echo "ver=${V#v}" >> $GITHUB_OUTPUT
           else
-            VER="0.0.0+${{ github.sha }}"
-            VER="${VER::16}"
+            echo "ver=0.0.0+${GITHUB_SHA::10}" >> $GITHUB_OUTPUT
           fi
-          export VER
+
+      - name: Package .deb
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
+        run: |
           mkdir -p dist
-          echo "${VER}" > dist/.version
-
-          # amd64
-          cp build/amd64/upgrade_tool dist/upgrade_tool-${VER}-amd64-static
-          ./scripts/package-deb.sh build/amd64/upgrade_tool amd64 dist/
-
-          # arm64
-          cp build/arm64/upgrade_tool dist/upgrade_tool-${VER}-arm64-static
-          ./scripts/package-deb.sh build/arm64/upgrade_tool arm64 dist/
-
-          echo "=== Build artifacts ==="
-          find dist/ -type f -not -name '.version' -exec ls -lh {} \;
+          cp build/upgrade_tool "dist/upgrade_tool-${VER}-${{ matrix.arch }}-static"
+          ./scripts/package-deb.sh build/upgrade_tool ${{ matrix.arch }} dist/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: upgrade_tool-${{ github.sha }}
+          name: upgrade_tool-${{ matrix.arch }}
           path: |
             dist/*.deb
             dist/upgrade_tool-*
 
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: upgrade_tool-*
+          merge-multiple: true
+          path: dist/
+
       - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          echo "=== Assets to upload ==="
+          ls -lh dist/
 
-          echo "=== Files to upload ==="
-          ls -lh dist/*.deb dist/upgrade_tool-*
-
-          if gh release view "${{ github.ref_name }}" &>/dev/null; then
-            echo "Release exists, reusing..."
-          else
-            cat > /tmp/release-notes.md <<'NOTES'
-          Pre-built fully-static binaries for Debian 11 (Bullseye) and later.
+          gh release create "${{ github.ref_name }}" \
+            --title "upgrade_tool ${{ github.ref_name }}" \
+            --notes "$(cat <<'NOTES'
+          Pre-built statically-linked binaries for Debian 11 (Bullseye) and later.
 
           **Assets:**
           - .deb packages for amd64 and arm64
@@ -124,13 +95,5 @@ jobs:
           All binaries are statically linked — zero runtime dependencies.
           Built from commit ${{ github.sha }}.
           NOTES
-            gh release create "${{ github.ref_name }}" \
-              --title "upgrade_tool ${{ github.ref_name }}" \
-              --notes-file /tmp/release-notes.md \
-              --draft
-          fi
-
-          gh release upload "${{ github.ref_name }}" \
-            dist/*.deb dist/upgrade_tool-* --clobber
-
-          gh release edit "${{ github.ref_name }}" --draft=false
+          )" \
+            dist/*.deb dist/upgrade_tool-*
