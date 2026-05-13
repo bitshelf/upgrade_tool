@@ -34,13 +34,13 @@ jobs:
 
       - name: Prepare libudev-zero
         run: |
+          mkdir -p build/third_party
           git clone --depth 1 --branch 1.0.3 \
-            https://github.com/illiliti/libudev-zero.git /tmp/libudev-zero
+            https://github.com/illiliti/libudev-zero.git build/third_party/libudev-zero-src
 
       - name: Build
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release \
-            -DFETCHCONTENT_SOURCE_DIR_LIBUDEV_ZERO_SOURCE=/tmp/libudev-zero
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build -- -j$(nproc)
 
       - name: Set version
