@@ -81,13 +81,18 @@ jobs:
           pattern: upgrade_tool-*
           merge-multiple: true
 
+      - name: Debug file layout
+        run: |
+          echo "=== Full directory tree ==="
+          find . -type f -not -path './.git/*' | sort
+          echo "=== dist/ contents ==="
+          find dist -type f -exec ls -lh {} \; 2>/dev/null || echo "dist/ not found"
+
       - name: Create Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo "=== Assets to upload ==="
-          find dist/ -type f -exec ls -lh {} \;
 
           cat > /tmp/release-notes.md <<'NOTES'
           Pre-built statically-linked binaries for Debian 11 (Bullseye) and later.
@@ -97,10 +102,18 @@ jobs:
           - Raw static binaries for amd64 and arm64
 
           All binaries are statically linked — zero runtime dependencies.
-          Built from commit ${{ github.sha }}.
           NOTES
 
-          gh release create "${{ github.ref_name }}" \
-            --title "upgrade_tool ${{ github.ref_name }}" \
-            --notes-file /tmp/release-notes.md \
-            dist/*.deb dist/upgrade_tool-*
+          if gh release view "${{ github.ref_name }}" &>/dev/null; then
+            echo "Release exists, reusing..."
+          else
+            gh release create "${{ github.ref_name }}" \
+              --title "upgrade_tool ${{ github.ref_name }}" \
+              --notes-file /tmp/release-notes.md \
+              --draft
+          fi
+
+          gh release upload "${{ github.ref_name }}" \
+            dist/*.deb dist/upgrade_tool-* --clobber
+
+          gh release edit "${{ github.ref_name }}" --draft=false
